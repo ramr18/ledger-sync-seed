@@ -1,5 +1,10 @@
 package in.simplifymoney.ledgersync.store;
 
+import in.simplifymoney.ledgersync.model.NormalizedTxn;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Moves everything already in the SQL store into the document store.
  *
@@ -21,7 +26,16 @@ public final class Backfill {
     }
 
     public Result run() {
-        throw new UnsupportedOperationException("backfill is not implemented");
+        List<NormalizedTxn> rows = source.all();
+        Map<String, NormalizedTxn> unique = new LinkedHashMap<>();
+        for (NormalizedTxn t : rows) unique.putIfAbsent(key(t), t);
+        for (NormalizedTxn t : unique.values()) target.save(t);
+        return new Result(rows.size(), unique.size(), rows.size() - unique.size());
+    }
+
+    private static String key(NormalizedTxn t) {
+        return t.accountLast4() + "|" + t.occurredAt().toInstant().toEpochMilli()
+                + "|" + t.direction() + "|" + t.amount().toPlainString();
     }
 
     public record Result(long read, long written, long skipped) {}

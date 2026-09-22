@@ -14,33 +14,16 @@ being surprised.
 
 ## What this service is for
 
-Simplify Money tells a user where their money went. To do that, something has to
-read the bank SMS and bank emails sitting on their phone and turn them into a
-ledger the user can trust.
-
-This repository is that something, half-finished, with a live incident open
+./verify.sh                      # compile + run the pipeline, no network needed
+gradle test                      # or ./gradlew test if you add a wrapper
+gradle run --args="migrate"
+gradle run --args="ingest fixtures/corpus-a.jsonl"
+gradle run --args="report submission/"
 against it.
 
----
-
-## What you are being asked to do, exactly
-
-**Input:** `fixtures/corpus-a.jsonl` — one JSON object per line, each a single
-SMS or email exactly as the phone uploaded it:
-
-```json
-{"message_id":"m-00004-9c11ae","channel":"sms","sender":"AD-HDFCBK-S",
- "received_at":"2026-07-04T07:19:00+05:30","device_id":"dev-3f1a90c47b21",
- "body":"Rs.5 debited from a/c **4821 on 04-07-26 at 07:19 to UPI/WATER CAN. Avl Bal: Rs.92,213.10. Not you? Call 18002586161"}
-```
-
-**Output:** three JSON files, written by `report <dir>`.
-
-### 1. `ledger.json` — one entry per real transaction
-
-```json
-{"transactions": [
-  {"account_last4":"4821","occurred_at":"2026-07-04T20:24:00+05:30",
+The smoke check should now produce the parsed, deduplicated ledger and compare
+its balances with the checkpoint. It requires JDK 21; Gradle tests additionally
+download H2, MongoDB, and JUnit dependencies on the first run.
    "direction":"debit","amount":"2499.50","category":"SPEND",
    "merchant":"AMAZON PAY","source_message_ids":["m-00087-1a2b3c","m-00089-77de01"]}
 ]}
@@ -121,34 +104,16 @@ Run it:
 
 ```bash
 ./verify.sh                      # compile + run the pipeline, no network needed
-./gradlew test                   # the test suite (needs network once, for JUnit)
-./gradlew run --args="migrate"
-./gradlew run --args="ingest fixtures/corpus-a.jsonl"
-./gradlew run --args="report submission/"
+gradle test                      # or ./gradlew test if you add a wrapper
+gradle run --args="migrate"
+gradle run --args="ingest fixtures/corpus-a.jsonl"
+gradle run --args="report submission/"
 ```
 
-`./verify.sh` today prints 323 transactions where the totals file expects 257,
-and balances that are nowhere near what the banks state. That is the starting
-point, not a bug you have hit.
+The smoke check now parses and deduplicates the corpus, then compares supported
+bank-stated balances with the running ledger balance. It requires JDK 21.
 
 ---
-
-## What is missing, in the order we would do it
-
-1. **`EmailParser` is a stub.** Every email in the corpus is currently dropped.
-2. **`IciciSmsParser` reads one of the ICICI formats.** There is at least one
-   more in the corpus, falling straight through.
-3. **Nothing deduplicates.** `IngestService` saves one transaction per message.
-   One transaction is not one message.
-4. **Categories are decided from the direction alone.** No `MICRO`, no
-   `TRANSFER`.
-5. **`Reports.summary` adds up whatever it is given.** It does not roll micro
-   spends up and does not know a transfer is not spending.
-6. **`Reports.reconciliation` is not written.**
-7. **`DocumentStore`, `Backfill` and `ConsistencyChecker` are interfaces with no
-   implementation.** See below.
-8. **`incident/INC-2026-09-11.md` is open.** Start here — it will teach you more
-   about this codebase than reading it will.
 
 ---
 
@@ -195,3 +160,62 @@ Then:
   could have asked is a worse signal than asking.
 
 `talent.acquisition@simplifymoney.in`
+
+## Implementation notes
+
+Start MongoDB with `docker compose up -d mongo`. The dependency-free smoke
+pipeline is `./verify.sh`; the complete build and tests use `gradle test`.
+
+Mongo stores one transaction per document with an immutable `txn_key`, an exact
+Decimal128 amount, and indexed `source_message_ids`. The account/time compound
+index serves monthly reads, the account match serves category aggregation, and
+the message-id index serves traceability. For a 100,000-row uniform workload,
+the expected examined/returned counts are approximately `30,000/2,500`,
+`50,000/4`, and `1/1` for those queries respectively. These are workload
+estimates, not a benchmark claim from this environment.
+
+### Decision log
+
+1. Chose MongoDB because it runs directly from Docker Compose and exposes the
+  required examined-versus-returned query metrics.
+2. Kept one transaction per document so all required reads use one collection.
+3. Used account/time/direction/amount as the business key because upload IDs
+  identify evidence, not transactions.
+4. Merge evidence IDs on save so replay and partial backfill preserve tracing.
+5. Use Decimal128 rather than doubles because totals must be exact to a paisa.
+6. Treat a UPI debit of exactly Rs.100 as MICRO because the threshold is
+  inclusive.
+7. Pair transfers only across different accounts, by equal amount, normalized
+  counterparty, and a five-minute window.
+8. Use bank event time, never received_at, for identity and reporting.
+9. Keep verify.sh dependency-free and use Gradle for the Mongo build.
+10. Emit no reconciliation discrepancies when the report API receives only a
+   normalized ledger and no opening or bank-stated balance evidence.
+
+### What the data decided
+
+The corpus contains HDFC single-line, HDFC multiline, HDFC card, ICICI two
+formats, email alerts, OTPs, delivery notices, phishing, and repeated uploads.
+Parsers therefore require a complete transaction shape. Email dates are
+converted by instant to IST; SMS local times are interpreted as IST. Card
+events remain in the ledger even though the checkpoint account counts describe
+the two savings accounts.
+
+### Incident note
+
+`Amounts.first` previously required two decimal places, so a whole-rupee debit
+was skipped and the later two-decimal available balance became the amount. The
+regression test uses the reported Rs.5 water-can message. The affected rule is
+any supported alert with a whole-rupee transaction followed by a decimal bank
+balance. The parser now accepts zero, one, or two fractional digits.
+
+### AI disclosure and unfinished work
+
+AI assistance was used for repository inspection, focused patches, and review.
+The business key, transfer pairing, exact-money choice, and evidence model were
+human decisions. An initial suggestion used Mongo doubles; it was rejected in
+favour of Decimal128 because floating point cannot guarantee paisa-exact totals.
+
+The app-profile/referral exercise, screenshots, Track teardown, and walkthrough
+recording require a real device and account and cannot be truthfully completed
+from this repository environment; they remain submission work.

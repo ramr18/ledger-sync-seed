@@ -14,8 +14,17 @@ public final class Amounts {
 
     private Amounts() {}
 
+    /**
+     * INC-2026-09-11: this used to be ([0-9,]+\.[0-9]{2}) - it only matched a
+     * figure written with exactly two decimals. Banks routinely write whole
+     * rupees without any decimals ("Rs.5", "INR 18,000"), so on those messages
+     * the FIRST match was not the transaction at all but the two-decimal
+     * balance quoted later in the same body. That is how a Rs.5 water-can
+     * debit was recorded as Rs.92,213.10. Amounts are now read with an
+     * optional fractional part.
+     */
     private static final Pattern AMOUNT =
-            Pattern.compile("(?:Rs\\.?|INR)\\s*([0-9,]+\\.[0-9]{2})");
+            Pattern.compile("(?:Rs\\.?|INR)\\s*([0-9][0-9,]*(?:\\.[0-9]{1,2})?)");
 
     private static final Pattern BALANCE = Pattern.compile(
             "(?:Avl\\s*Bal|Available\\s*Balance|BalAvl|Avl\\s*Limit)\\s*:?\\s*"
@@ -36,7 +45,8 @@ public final class Amounts {
         return toDecimal(m.group(1));
     }
 
-    private static BigDecimal toDecimal(String raw) {
+    /** Also used by parsers that capture the amount inline (ICICI V2). */
+    static BigDecimal toDecimal(String raw) {
         return new BigDecimal(raw.replace(",", "")).setScale(2);
     }
 }

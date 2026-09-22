@@ -15,7 +15,9 @@ import java.sql.Statement;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * The store this service has used since it was written: a single relational
@@ -78,20 +80,53 @@ public final class SqlLedgerStore implements LedgerStore, AutoCloseable {
 
     @Override
     public void save(NormalizedTxn t) {
+        try {
+            NormalizedTxn existing = findByKey(t);
+            if (existing == null) {
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "INSERT INTO ledger(account_last4, occurred_at, direction, amount,"
+                                + " category, merchant, source_message_ids) VALUES (?,?,?,?,?,?,?)")) {
+                    ps.setString(1, t.accountLast4());
+                    ps.setString(2, t.occurredAt().toString());
+                    ps.setString(3, t.direction().name());
+                    ps.setBigDecimal(4, t.amount());
+                    ps.setString(5, t.category().name());
+                    ps.setString(6, t.merchant());
+                    ps.setString(7, String.join(",", t.sourceMessageIds()));
+                    ps.executeUpdate();
+                }
+                return;
+            }
+            Set<String> ids = new HashSet<>(existing.sourceMessageIds());
+            ids.addAll(t.sourceMessageIds());
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE ledger SET source_message_ids = ?, merchant = ? WHERE account_last4 = ?"
+                            + " AND occurred_at = ? AND direction = ? AND amount = ?")) {
+                ps.setString(1, ids.stream().sorted().collect(java.util.stream.Collectors.joining(",")));
+                ps.setString(2, existing.merchant().isBlank() ? t.merchant() : existing.merchant());
+                ps.setString(3, t.accountLast4());
+                ps.setString(4, t.occurredAt().toString());
+                ps.setString(5, t.direction().name());
+                ps.setBigDecimal(6, t.amount());
+                ps.executeUpdate();
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("could not save " + t, e);
+        }
+    }
+
+    private NormalizedTxn findByKey(NormalizedTxn t) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO ledger(account_last4, occurred_at, direction, amount,"
-                        + " category, merchant, source_message_ids)"
-                        + " VALUES (?,?,?,?,?,?,?)")) {
+                "SELECT account_last4, occurred_at, direction, amount, category, merchant, source_message_ids"
+                        + " FROM ledger WHERE account_last4 = ? AND occurred_at = ? AND direction = ? AND amount = ?"
+                        + " ORDER BY id LIMIT 1")) {
             ps.setString(1, t.accountLast4());
             ps.setString(2, t.occurredAt().toString());
             ps.setString(3, t.direction().name());
             ps.setBigDecimal(4, t.amount());
-            ps.setString(5, t.category().name());
-            ps.setString(6, t.merchant());
-            ps.setString(7, String.join(",", t.sourceMessageIds()));
-            ps.executeUpdate();
-        } catch (SQLException e) {
-            throw new IllegalStateException("could not save " + t, e);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? readTxn(rs) : null;
+            }
         }
     }
 
@@ -103,20 +138,21 @@ public final class SqlLedgerStore implements LedgerStore, AutoCloseable {
                      "SELECT account_last4, occurred_at, direction, amount, category,"
                              + " merchant, source_message_ids FROM ledger ORDER BY occurred_at")) {
             while (rs.next()) {
-                out.add(new NormalizedTxn(
-                        rs.getString(1),
-                        OffsetDateTime.parse(rs.getString(2)),
-                        Direction.valueOf(rs.getString(3)),
-                        rs.getBigDecimal(4).setScale(2),
-                        Category.valueOf(rs.getString(5)),
-                        rs.getString(6),
-                        Arrays.stream(rs.getString(7).split(","))
-                                .filter(s -> !s.isBlank()).toList()));
+                out.add(readTxn(rs));
             }
         } catch (SQLException e) {
             throw new IllegalStateException("could not read the ledger", e);
         }
         return out;
+    }
+
+    public List<NormalizedTxn> findAll() { return all(); }
+
+    private NormalizedTxn readTxn(ResultSet rs) throws SQLException {
+        return new NormalizedTxn(rs.getString(1), OffsetDateTime.parse(rs.getString(2)),
+                Direction.valueOf(rs.getString(3)), rs.getBigDecimal(4).setScale(2),
+                Category.valueOf(rs.getString(5)), rs.getString(6),
+                Arrays.stream(rs.getString(7).split(",")).filter(s -> !s.isBlank()).toList());
     }
 
     @Override

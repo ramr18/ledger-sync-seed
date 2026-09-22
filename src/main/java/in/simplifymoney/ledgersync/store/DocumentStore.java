@@ -32,5 +32,9 @@ public interface DocumentStore {
     /** Q3: which transaction, if any, did this message produce? */
     Optional<NormalizedTxn> byMessageId(String messageId);
 
+    default List<NormalizedTxn> all() {
+        throw new UnsupportedOperationException("store snapshots are not supported");
+    }
+
     void save(NormalizedTxn txn);
 }

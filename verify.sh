@@ -6,7 +6,8 @@ cd "$(dirname "$0")"
 
 echo "==> compiling"
 rm -rf build/selfcheck && mkdir -p build/selfcheck
-javac -d build/selfcheck $(find src/main/java -name '*.java')
+# The smoke path is dependency-free; Gradle compiles the Mongo implementation.
+javac -d build/selfcheck $(find src/main/java -name '*.java' ! -path '*/store/mongo/*')
 
 echo
 echo "==> running"

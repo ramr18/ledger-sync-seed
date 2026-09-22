@@ -1,0 +1,11 @@
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - ledger-mongo:/data/db
+
+volumes:
+  ledger-mongo:
